@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<style>
+html, body { margin: 0; height: 100%; background: __BG__; overflow: hidden; touch-action: none; }
+#map { position: absolute; inset: 0; overflow: hidden; background: __BG__; }
+#layer { position: absolute; left: 0; top: 0; }
+.tile { position: absolute; width: 256px; height: 256px; background: __BG__; }
+</style>
+</head>
+<body>
+<div id="map"><div id="layer"></div></div>
+<script>
+var view = { lat: 30.753, lng: 103.929, z: 16 };
+var map = document.getElementById("map");
+var layer = document.getElementById("layer");
+var drag = null;
+
+function tiles(z) { return Math.pow(2, z); }
+function lngToX(lng, z) { return (lng + 180) / 360 * tiles(z); }
+function latToY(lat, z) {
+  var rad = lat * Math.PI / 180;
+  return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * tiles(z);
+}
+function xToLng(x, z) { return x / tiles(z) * 360 - 180; }
+function yToLat(y, z) {
+  var n = Math.PI - 2 * Math.PI * y / tiles(z);
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+function render() {
+  var width = map.clientWidth || window.innerWidth;
+  var height = map.clientHeight || window.innerHeight;
+  if (width < 10 || height < 10) return;
+  var centerX = lngToX(view.lng, view.z) * 256;
+  var centerY = latToY(view.lat, view.z) * 256;
+  var originX = centerX - width / 2;
+  var originY = centerY - height / 2;
+  var x0 = Math.floor(originX / 256);
+  var y0 = Math.floor(originY / 256);
+  var x1 = Math.floor((originX + width) / 256);
+  var y1 = Math.floor((originY + height) / 256);
+  var max = tiles(view.z);
+  var pending = 0;
+  var failed = 0;
+  layer.innerHTML = "";
+  layer.style.transform = "";
+  for (var x = x0; x <= x1; x++) {
+    for (var y = y0; y <= y1; y++) {
+      if (y < 0 || y >= max) continue;
+      var wrapped = ((x % max) + max) % max;
+      var sub = (wrapped % 4) + 1;
+      var img = document.createElement("img");
+      img.className = "tile";
+      img.dataset.x = String(wrapped);
+      img.dataset.y = String(y);
+      img.dataset.z = String(view.z);
+      img.style.left = (x * 256 - originX) + "px";
+      img.style.top = (y * 256 - originY) + "px";
+      img.src = "https://webrd0" + sub + ".is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x=" + wrapped + "&y=" + y + "&z=" + view.z;
+      pending++;
+      img.onload = function () {
+        pending--;
+        document.title = "tiles-ok";
+      };
+      img.onerror = function () {
+        if (this.dataset.fallback) {
+          pending--;
+          failed++;
+          if (pending === 0 && failed > 0 && document.title !== "tiles-ok") document.title = "tiles-failed";
+          return;
+        }
+        this.dataset.fallback = "1";
+        var host = (Number(this.dataset.x) % 4) + 1;
+        this.src = "https://wprd0" + host + ".is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=7&x=" + this.dataset.x + "&y=" + this.dataset.y + "&z=" + this.dataset.z;
+      };
+      layer.appendChild(img);
+    }
+  }
+}
+
+function setCenter(lat, lng) {
+  view.lat = lat;
+  view.lng = lng;
+  view.z = Math.max(view.z, 16);
+  render();
+}
+function zoomBy(delta) {
+  view.z = Math.max(3, Math.min(18, view.z + delta));
+  render();
+}
+function currentCenter() {
+  return JSON.stringify({ lat: view.lat, lng: view.lng });
+}
+
+map.addEventListener("pointerdown", function (event) {
+  drag = { x: event.clientX, y: event.clientY };
+  map.setPointerCapture(event.pointerId);
+});
+map.addEventListener("pointermove", function (event) {
+  if (!drag) return;
+  layer.style.transform = "translate(" + (event.clientX - drag.x) + "px," + (event.clientY - drag.y) + "px)";
+});
+map.addEventListener("pointerup", function (event) {
+  if (!drag) return;
+  var dx = event.clientX - drag.x;
+  var dy = event.clientY - drag.y;
+  drag = null;
+  var pixelX = lngToX(view.lng, view.z) * 256 - dx;
+  var pixelY = latToY(view.lat, view.z) * 256 - dy;
+  view.lng = xToLng(pixelX / 256, view.z);
+  view.lat = yToLat(pixelY / 256, view.z);
+  render();
+});
+map.addEventListener("pointercancel", function () { drag = null; layer.style.transform = ""; render(); });
+window.addEventListener("resize", render);
+setTimeout(render, 40);
+</script>
+</body>
+</html>

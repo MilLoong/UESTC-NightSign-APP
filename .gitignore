@@ -1,0 +1,30 @@
+# Android Studio / IntelliJ
+.idea/
+*.iml
+
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+**/build/
+.cxx/
+.externalNativeBuild/
+captures/
+
+# 本机配置与签名，不要提交
+local.properties
+keystore.properties
+signing/
+*.jks
+*.keystore
+
+# 安装包只由 Release 发布，不放进仓库
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# 系统与崩溃转储
+.DS_Store
+Thumbs.db
+*.hprof
+*.log
