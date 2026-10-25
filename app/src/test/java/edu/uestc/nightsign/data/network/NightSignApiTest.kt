@@ -13,10 +13,11 @@ import org.junit.Test
 class NightSignApiTest {
     private lateinit var server: MockWebServer
     private lateinit var api: NightSignApi
+    private val diagnostics = mutableListOf<ApiDiagnostic>()
     @Before fun setUp() {
         server = MockWebServer()
         server.start()
-        api = NightSignApi(OkHttpClient(), server.url("/").toString().trimEnd('/'))
+        api = NightSignApi(OkHttpClient(), server.url("/").toString().trimEnd('/'), diagnostics::add)
     }
     @After fun tearDown() { server.shutdown() }
     private fun respond(body: String) = server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(body))
@@ -99,5 +100,101 @@ class NightSignApiTest {
         val status = api.today()
         assertTrue(status.checkedIn)
         assertTrue(status.abnormal)
+    }
+
+    @Test fun distinguishesWechatAuthorizationFromExpiredSession() {
+        for (code in listOf(46001, 46002, 46003)) {
+            respond("""{"code":$code,"msg":"请从微信小程序重新进入打卡应用后打卡"}""")
+            val error = runCatching { api.submit(SignSettings("30.1", "103.1", "测试地址")) }.exceptionOrNull()
+            assertTrue(error is CheckinAuthorizationException)
+            assertFalse(error is SessionExpiredException)
+            assertEquals(code, diagnostics.last().businessCode)
+            assertEquals(200, diagnostics.last().httpStatus)
+            assertTrue(error!!.message!!.contains("code=$code"))
+        }
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun readsWechatErrorEnvelopeBeforeHttp403Handling() {
+        server.enqueue(MockResponse().setResponseCode(403)
+            .setBody("""{"code":46002,"message":"请从微信小程序重新进入打卡应用后打卡"}"""))
+        val error = runCatching { api.submit(SignSettings("30.1", "103.1", "测试地址")) }.exceptionOrNull()
+        assertTrue(error is CheckinAuthorizationException)
+        assertEquals(403, diagnostics.single().httpStatus)
+    }
+
+    @Test fun classifiesKnownMessageWithoutInventingBusinessCode() {
+        respond("""{"msg":"请从微信小程序重新进入打卡应用后打卡"}""")
+        val error = runCatching { api.submit(SignSettings("30.1", "103.1", "测试地址")) }.exceptionOrNull()
+        assertTrue(error is CheckinAuthorizationException)
+        assertNull(diagnostics.single().businessCode)
+    }
+
+    @Test fun diagnosticsNeverRetainQueriesHeadersBodiesOrUnknownMessages() {
+        server.enqueue(MockResponse().setResponseCode(400).setHeader("Set-Cookie", "SESSION=secret-cookie")
+            .setBody("""{"code":4999,"msg":"token=secret-token ticket=secret-ticket 学号123456","data":{"password":"secret-password"}}"""))
+        val error = runCatching { api.reverse(30.12345, 103.54321) }.exceptionOrNull()!!
+        val output = diagnostics.single().toString() + error.message
+        for (secret in listOf("secret-cookie", "secret-token", "secret-ticket", "secret-password", "123456", "30.12345", "103.54321")) {
+            assertFalse(output.contains(secret))
+        }
+        assertEquals(ApiConstants.REVERSE, diagnostics.single().endpoint)
+        assertEquals(4999, diagnostics.single().businessCode)
+    }
+
+    @Test fun forbiddenWithoutTicketErrorIsNotAssumedToBeExpiredSession() {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("<html>secret</html>"))
+        val error = runCatching { api.today() }.exceptionOrNull()
+        assertNotNull(error)
+        assertFalse(error is SessionExpiredException)
+        assertEquals("HTTP", diagnostics.single().category)
+    }
+
+    @Test fun malformedJsonProducesSafeFormatDiagnostic() {
+        respond("{secret-invalid-json")
+        val error = runCatching { api.today() }.exceptionOrNull()!!
+        assertEquals("FORMAT", diagnostics.single().category)
+        assertFalse(error.message!!.contains("secret"))
+    }
+
+    @Test fun exchangesCodeForTicketWithoutSubmittingCheckin() {
+        val ticket = "t".repeat(43)
+        respond("""{"code":0,"ok":true,"data":{"ticket":"$ticket"}}""")
+        assertEquals(ticket, api.requestCheckinTicket("c".repeat(32)))
+        val request = server.takeRequest()
+        assertEquals(ApiConstants.CHECKIN_TICKET, request.path)
+        assertEquals("mp-weixin", request.getHeader("Platform"))
+        assertNull(request.getHeader("X-Checkin-Ticket"))
+        assertEquals("c".repeat(32), JsonParser.parseString(request.body.readUtf8()).asJsonObject.get("code").asString)
+        assertEquals(1, server.requestCount)
+        assertTrue(diagnostics.isEmpty())
+    }
+
+    @Test fun rejectsInvalidTicketResponsesAndInvalidInputWithoutLeakingCredentials() {
+        respond("""{"code":0,"data":{"ticket":"secret-invalid-ticket"}}""")
+        val error = runCatching { api.requestCheckinTicket("c".repeat(32)) }.exceptionOrNull()!!
+        assertFalse(error.message!!.contains("secret-invalid-ticket"))
+        assertTrue(runCatching { api.requestCheckinTicket("invalid") }.isFailure)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun onlySubmissionUsesFreshTicketAndNeverFallsBackAfterProviderFailure() {
+        var calls = 0
+        val api = NightSignApi(OkHttpClient(), server.url("/").toString().trimEnd('/'),
+            checkinTicketProvider = { calls++; "t".repeat(43) })
+        respond("""{"code":0,"data":{"businessDate":"2026-10-24","recordStatusCode":"PENDING"}}""")
+        api.today()
+        assertEquals(0, calls)
+        assertNull(server.takeRequest().getHeader("X-Checkin-Ticket"))
+        repeat(2) {
+            respond("""{"code":0,"data":true}""")
+            api.submit(SignSettings("30.1", "103.1", "测试地址"))
+            assertEquals("t".repeat(43), server.takeRequest().getHeader("X-Checkin-Ticket"))
+        }
+        assertEquals(2, calls)
+        val failing = NightSignApi(OkHttpClient(), server.url("/").toString().trimEnd('/'),
+            checkinTicketProvider = { throw java.io.IOException("授权失败") })
+        assertTrue(runCatching { failing.submit(SignSettings("30.1", "103.1", "测试地址")) }.isFailure)
+        assertEquals(3, server.requestCount)
     }
 }

@@ -8,6 +8,7 @@ import edu.uestc.nightsign.NightSignApp
 import edu.uestc.nightsign.data.location.DeviceLocator
 import edu.uestc.nightsign.data.location.MapAddressResolver
 import edu.uestc.nightsign.data.network.SessionExpiredException
+import edu.uestc.nightsign.data.network.WechatCodeSettings
 import edu.uestc.nightsign.data.update.AppUpdateChecker
 import edu.uestc.nightsign.data.update.UpdateReminderStorage
 import edu.uestc.nightsign.domain.*
@@ -30,6 +31,7 @@ data class MainUiState(
     val theme: String = "blue",
     val signedIn: Boolean = false,
     val updatePrompt: UpdatePrompt? = null,
+    val wechatCode: WechatCodeSettings = WechatCodeSettings(),
 )
 
 data class UpdatePrompt(
@@ -44,7 +46,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = app.repository
     private val mutable = MutableStateFlow(MainUiState(settings = app.store.settings(), events = app.store.events(),
         theme = app.store.secret("theme") ?: "blue",
-        signedIn = repository.jar.snapshot().any { it.domain == "jzsz.uestc.edu.cn" && it.name == "SESSION" }))
+        signedIn = repository.jar.snapshot().any { it.domain == "jzsz.uestc.edu.cn" && it.name == "SESSION" },
+        wechatCode = repository.wechatCodeSettings()))
     val ui = mutable.asStateFlow()
     private val updateChecker = AppUpdateChecker()
     private val updateStorage = UpdateReminderStorage(application)
@@ -73,6 +76,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refresh() = launchOperation { loadOverview() }
+
+    fun saveWechatCode(settings: WechatCodeSettings) {
+        runCatching {
+            repository.saveWechatCodeSettings(settings)
+            mutable.update { it.copy(wechatCode = repository.wechatCodeSettings(), message = "取码配置已保存") }
+        }.onFailure { error -> mutable.update { it.copy(message = error.message) } }
+    }
+
+    fun testWechatAuthorization() = launchOperation {
+        repository.testWechatAuthorization()
+        mutable.update { it.copy(message = "微信取码及学校授权成功，未提交签到") }
+    }
 
     fun showLogin() { mutable.update { it.copy(showLogin = true, message = null) } }
     fun closeLogin() {
@@ -176,7 +191,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun logout() = launchOperation {
         repository.logout()
         CheckinWorker.schedule(app, false)
-        mutable.update { it.copy(overview = null, signedIn = false, settings = app.store.settings(), message = "已退出登录") }
+        mutable.update { it.copy(overview = null, signedIn = false, settings = app.store.settings(),
+            wechatCode = repository.wechatCodeSettings(), message = "已退出登录") }
     }
     fun clearMessage() { mutable.update { it.copy(message = null) } }
 

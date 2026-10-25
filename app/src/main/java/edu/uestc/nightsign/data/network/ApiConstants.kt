@@ -7,6 +7,8 @@ import java.util.concurrent.TimeUnit
 
 /** 统一认证与晚安成电的接口入口。 */
 object ApiConstants {
+    const val WECHAT_APP_ID = "wxaa78bf2905f01cee"
+    const val CHECKIN_TICKET = "/platform-app/api/auth/checkin-ticket"
     const val CAS_ORIGIN = "https://idas.uestc.edu.cn"
     const val CAS_BASE_URL = "$CAS_ORIGIN/authserver"
     const val PLATFORM_ORIGIN = "https://jzsz.uestc.edu.cn"

@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <application android:name=".NightSignApp" android:label="晚安成电" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false" android:icon="@drawable/ic_moon">
+    <application android:name=".NightSignApp" android:label="晚安成电" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false" android:networkSecurityConfig="@xml/network_security_config" android:icon="@drawable/ic_moon">
         <activity android:name=".WebLoginActivity" android:exported="false" />
         <activity android:name=".MapPickerActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">

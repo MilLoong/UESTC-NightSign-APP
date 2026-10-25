@@ -24,9 +24,37 @@ class NightSignRepository(val store: PrivateStore) {
     val jar = InMemoryCookieJar()
     val client = ApiConstants.buildOkHttp(jar)
     val auth = CasLoginRepository(client, jar)
-    private val api = NightSignApi(client)
+    private val codeClient = WechatCodeClient()
+    private val rootCodeClient = RootWechatCodeClient()
+    private val api = NightSignApi(client, onDiagnostic = { store.record(it.summary()) },
+        checkinTicketProvider = { acquireWechatTicket() })
     private val mutex = Mutex()
     private val gson = Gson()
+
+    fun wechatCodeSettings(): WechatCodeSettings = runCatching {
+        gson.fromJson(store.secret("wechat-code"), WechatCodeSettings::class.java) ?: WechatCodeSettings()
+    }.getOrDefault(WechatCodeSettings())
+
+    fun saveWechatCodeSettings(settings: WechatCodeSettings) {
+        settings.validate()
+        if (settings.enabled) store.putSecret("wechat-code", gson.toJson(settings))
+        else store.removeSecret("wechat-code")
+    }
+
+    private fun acquireWechatTicket(): String {
+        val settings = wechatCodeSettings()
+        require(settings.enabled) { "请先配置微信取码服务并测试授权" }
+        val code = if (settings.rootMode) rootCodeClient.fetchCode() else codeClient.fetchCode(settings)
+        return api.requestCheckinTicket(code)
+    }
+
+    suspend fun testWechatAuthorization() = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            prepareSession(false)
+            acquireWechatTicket()
+            store.record("微信取码及学校授权成功（未提交签到）")
+        }
+    }
 
     init {
         runCatching {
@@ -180,6 +208,7 @@ class NightSignRepository(val store: PrivateStore) {
             store.removeSecret("cookies")
             store.removeSecret("account")
             store.lastSuccess = ""
+            store.removeSecret("wechat-code")
             store.needsLogin = false
             store.saveSettings(store.settings().copy(autoEnabled = false))
             store.record("已退出登录并关闭后台签到")

@@ -1,0 +1,7 @@
+#!/system/bin/sh
+set -eu
+test "$(/system/bin/id -u)" = 0 || exit 73
+apk=$(/system/bin/pm path com.milloong.uestc.nightsign.bridge | /system/bin/sed -n '1s/^package://p')
+test -n "$apk" && test -f "$apk" || exit 74
+export CLASSPATH="$apk"
+exec /system/bin/app_process /system/bin edu.uestc.nightsign.bridge.BridgeCli "$@"

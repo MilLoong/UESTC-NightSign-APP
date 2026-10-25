@@ -11,35 +11,78 @@ import com.google.gson.JsonParser
 import java.io.IOException
 import java.time.format.DateTimeFormatter
 
-class SessionExpiredException : IOException("登录状态已过期，请重新登录")
+class SessionExpiredException(val diagnostic: ApiDiagnostic? = null) :
+    IOException(diagnostic?.summary() ?: "登录状态已过期，请重新登录")
+
+data class ApiDiagnostic(
+    val endpoint: String,
+    val httpStatus: Int,
+    val businessCode: Int?,
+    val category: String,
+    val safeMessage: String,
+) {
+    fun summary() = "HTTP $httpStatus code=${businessCode ?: "unknown"} [$category] $endpoint：$safeMessage"
+}
+
+class CheckinAuthorizationException(val diagnostic: ApiDiagnostic) : IOException(diagnostic.summary())
+
+// Only retain recognized public messages; arbitrary server text may echo credentials or personal data.
+private fun safePlatformMessage(message: String): String = when (message.trim()) {
+    "请从微信小程序重新进入打卡应用后打卡",
+    "请从微信小程序重新进入打卡应用后打卡。",
+    "登录无效或已过期",
+    "暂未开通打卡" -> message.trim()
+    else -> if (message.isBlank()) "平台未提供提示" else "平台提示已隐藏（避免记录敏感信息）"
+}
 
 /** 只负责晚安成电协议，不依赖界面或本地存储。 */
 class NightSignApi(
     private val client: OkHttpClient,
     private val origin: String = ApiConstants.PLATFORM_ORIGIN,
+    private val onDiagnostic: (ApiDiagnostic) -> Unit = {},
+    private val checkinTicketProvider: (() -> String)? = null,
 ) {
     private val businessClient = client.newBuilder().followRedirects(false).followSslRedirects(false)
         .retryOnConnectionFailure(false).build()
-    private fun request(path: String, body: JsonObject? = null, portal: Boolean = false): JsonObject {
+    private fun request(path: String, body: JsonObject? = null, portal: Boolean = false,
+                        platform: String = "h5", ticket: String? = null): JsonObject {
         val builder = Request.Builder().url(origin + path)
-            .header("Platform", "h5")
+            .header("Platform", platform)
             .header("Accept", "application/json, text/plain, */*")
             .header("Origin", origin)
             .header("Referer", if (portal) "$origin/" else "$origin/daily-checkin-h5/index.html?appId=294")
         if (portal) builder.header("Content-Type", "application/json;charset=UTF-8")
+        if (ticket != null) {
+            require(Regex("[A-Za-z0-9_-]{43}").matches(ticket)) { "打卡授权响应无效" }
+            builder.header("X-Checkin-Ticket", ticket)
+        }
         if (body != null) builder.post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
         businessClient.newCall(builder.build()).execute().use { response ->
             val raw = response.body?.string().orEmpty()
-            if (response.code in listOf(301, 302, 401, 403) || response.request.url.host != origin.toHttpUrl().host) {
-                throw SessionExpiredException()
+            val json = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+            val code = runCatching { json?.get("code")?.asString?.toIntOrNull() }.getOrNull()
+            val message = runCatching { json?.text("msg").orEmpty().ifBlank { json?.text("message").orEmpty() } }
+                .getOrDefault("")
+            fun diagnostic(category: String, fallback: String): ApiDiagnostic {
+                val result = ApiDiagnostic(path.substringBefore('?'), response.code, code, category,
+                    if (message.isBlank()) fallback else safePlatformMessage(message))
+                runCatching { onDiagnostic(result) }
+                return result
             }
-            if (!response.isSuccessful) throw IOException("平台请求失败：HTTP ${response.code}")
-            if (!raw.trimStart().startsWith("{")) throw IOException("平台未返回 JSON，请尝试 Web 登录")
-            val json = JsonParser.parseString(raw).asJsonObject
-            val code = json.get("code")?.asInt ?: -1
-            if (code == 4001) throw SessionExpiredException()
+            val operation = path.substringBefore('?') in setOf(ApiConstants.CHECKIN,
+                "/daily-checkin/api/student-checkin-record/report")
+            if (operation && (code in setOf(46001, 46002, 46003) ||
+                    message.trim().removeSuffix("。") == "请从微信小程序重新进入打卡应用后打卡")) {
+                throw CheckinAuthorizationException(diagnostic("WECHAT_AUTH", "需要微信小程序打卡授权"))
+            }
+            if (response.code in listOf(301, 302, 303, 307, 308, 401) || code == 4001 ||
+                response.request.url.host != origin.toHttpUrl().host) {
+                throw SessionExpiredException(diagnostic("SESSION", "登录状态已过期，请重新登录"))
+            }
+            if (!response.isSuccessful) throw IOException(diagnostic("HTTP", "平台拒绝请求").summary())
+            if (json == null) throw IOException(diagnostic("FORMAT", "平台未返回有效 JSON").summary())
             if (!portal && (code != 0 || json.get("ok")?.asBoolean == false)) {
-                throw IOException(json.text("msg").ifBlank { "平台操作失败" }.take(160))
+                throw IOException(diagnostic("BUSINESS", "平台操作失败").summary())
             }
             return json
         }
@@ -49,13 +92,25 @@ class NightSignApi(
         request("${ApiConstants.WARMUP}?_t=${System.currentTimeMillis()}", portal = true)
     }
 
+    fun requestCheckinTicket(code: String): String {
+        require(Regex("[A-Za-z0-9_-]{24,128}").matches(code)) { "微信登录凭证格式无效" }
+        val body = JsonObject().apply { addProperty("code", code) }
+        val result = request(ApiConstants.CHECKIN_TICKET, body, platform = "mp-weixin")
+        val ticket = runCatching { result.getAsJsonObject("data").text("ticket") }.getOrDefault("")
+        if (!Regex("[A-Za-z0-9_-]{43}").matches(ticket)) throw IOException("打卡授权响应无效")
+        return ticket
+    }
+
     fun enterApp() {
         val request = Request.Builder().url(origin + ApiConstants.APP_ENTRY)
             .header("Referer", "$origin/").build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful || response.request.url.host != origin.toHttpUrl().host ||
                 !response.request.url.encodedPath.startsWith("/daily-checkin-h5/")) {
-                throw SessionExpiredException()
+                val diagnostic = ApiDiagnostic(ApiConstants.APP_ENTRY.substringBefore('?'), response.code,
+                    null, "SESSION", "未能进入打卡应用，请重新登录")
+                runCatching { onDiagnostic(diagnostic) }
+                throw SessionExpiredException(diagnostic)
             }
         }
     }
@@ -115,7 +170,7 @@ class NightSignApi(
             addProperty("locationAccuracy", "")
             addProperty("errorMessage", "")
         }
-        val result = request(ApiConstants.CHECKIN, payload)
+        val result = request(ApiConstants.CHECKIN, payload, ticket = checkinTicketProvider?.invoke())
         if (result.get("data")?.asBoolean != true) throw IOException("平台未确认提交，请刷新今日状态")
     }
 }
