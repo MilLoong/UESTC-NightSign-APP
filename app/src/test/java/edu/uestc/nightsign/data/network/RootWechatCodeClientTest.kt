@@ -10,11 +10,11 @@ class RootWechatCodeClientTest {
     private fun response(appId: String = ApiConstants.WECHAT_APP_ID, requestNonce: String = nonce) =
         """{"ok":true,"appId":"$appId","nonce":"$requestNonce","code":"$code"}"""
 
-    @Test fun defaultsToRootButPreservesExistingBrokerConfiguration() {
-        assertTrue(WechatCodeSettings().rootMode)
-        assertFalse(WechatCodeSettings(accessToken = "a".repeat(43)).rootMode)
-        assertTrue(WechatCodeSettings(mode = "root", accessToken = "a".repeat(43)).rootMode)
-        assertFalse(WechatCodeSettings(mode = "broker").enabled)
+    @Test fun defaultsToYybAndRejectsLegacyModes() {
+        assertEquals("yyb", WechatCodeSettings().mode)
+        assertFalse(WechatCodeSettings().enabled)
+        assertTrue(runCatching { WechatCodeSettings(mode = "root").validate() }.isFailure)
+        assertTrue(runCatching { WechatCodeSettings(mode = "broker").validate() }.isFailure)
     }
 
     @Test fun invokesOnlyFixedAdapterWithBoundAppAndNonce() {

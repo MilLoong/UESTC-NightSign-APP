@@ -25,7 +25,6 @@ class NightSignRepository(val store: PrivateStore) {
     val client = ApiConstants.buildOkHttp(jar)
     val auth = CasLoginRepository(client, jar)
     private val codeClient = WechatCodeClient()
-    private val rootCodeClient = RootWechatCodeClient()
     private val api = NightSignApi(client, onDiagnostic = { store.record(it.summary()) },
         checkinTicketProvider = { acquireWechatTicket() })
     private val mutex = Mutex()
@@ -33,18 +32,20 @@ class NightSignRepository(val store: PrivateStore) {
 
     fun wechatCodeSettings(): WechatCodeSettings = runCatching {
         gson.fromJson(store.secret("wechat-code"), WechatCodeSettings::class.java) ?: WechatCodeSettings()
-    }.getOrDefault(WechatCodeSettings())
+    }.getOrDefault(WechatCodeSettings()).let { if (it.mode == "yyb") it else WechatCodeSettings() }
 
     fun saveWechatCodeSettings(settings: WechatCodeSettings) {
-        settings.validate()
-        if (settings.enabled) store.putSecret("wechat-code", gson.toJson(settings))
+        settings.validatedUrl()
+        require(settings.mode == "yyb") { "取码模式无效" }
+        if (!settings.accountRef.isNullOrBlank()) settings.validate()
+        if (settings.accessToken.isNotBlank()) store.putSecret("wechat-code", gson.toJson(settings))
         else store.removeSecret("wechat-code")
     }
 
     private fun acquireWechatTicket(): String {
         val settings = wechatCodeSettings()
         require(settings.enabled) { "请先配置微信取码服务并测试授权" }
-        val code = if (settings.rootMode) rootCodeClient.fetchCode() else codeClient.fetchCode(settings)
+        val code = codeClient.fetchCode(settings)
         return api.requestCheckinTicket(code)
     }
 

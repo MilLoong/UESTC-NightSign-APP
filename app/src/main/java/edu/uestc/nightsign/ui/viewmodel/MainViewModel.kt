@@ -5,10 +5,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import edu.uestc.nightsign.BuildConfig
 import edu.uestc.nightsign.NightSignApp
+import edu.uestc.nightsign.WechatAuthorizationService
 import edu.uestc.nightsign.data.location.DeviceLocator
 import edu.uestc.nightsign.data.location.MapAddressResolver
 import edu.uestc.nightsign.data.network.SessionExpiredException
 import edu.uestc.nightsign.data.network.WechatCodeSettings
+import edu.uestc.nightsign.data.wechat.retryWechatQr
+import edu.uestc.nightsign.data.wechat.ServerPairingClient
+import edu.uestc.nightsign.data.wechat.ServerPairingOffer
 import edu.uestc.nightsign.data.update.AppUpdateChecker
 import edu.uestc.nightsign.data.update.UpdateReminderStorage
 import edu.uestc.nightsign.domain.*
@@ -32,6 +36,9 @@ data class MainUiState(
     val signedIn: Boolean = false,
     val updatePrompt: UpdatePrompt? = null,
     val wechatCode: WechatCodeSettings = WechatCodeSettings(),
+    val wechatQr: edu.uestc.nightsign.data.wechat.WechatQr? = null,
+    val qrStatus: String = "",
+    val qrBusy: Boolean = false,
 )
 
 data class UpdatePrompt(
@@ -54,6 +61,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var operation: Job? = null
     private var smsAnswer: CompletableDeferred<String?>? = null
     private var countdown: Job? = null
+    private var qrJob: Job? = null
+    private var qrGeneration = 0
+    private var qrRemote: WechatCodeSettings? = null
+
+    fun createWechatQr(remote: WechatCodeSettings) {
+        if (mutable.value.qrBusy || mutable.value.busy) return
+        qrRemote = remote
+        val generation = ++qrGeneration
+        qrJob = viewModelScope.launch {
+            mutable.update { it.copy(qrBusy = true, qrStatus = "正在生成二维码", wechatQr = null) }
+            try {
+                WechatAuthorizationService.start(app)
+                val qr = withContext(Dispatchers.IO) { app.wechat.create(remote) }
+                mutable.update { it.copy(wechatQr = qr, qrStatus = "请在微信扫码并确认登录") }
+                withTimeout(300_000) {
+                    var lastReason: String? = null
+                    val onRetry: (String) -> Unit = { reason ->
+                        if (reason != lastReason) {
+                            app.store.record("微信授权重试：$reason")
+                            lastReason = reason
+                        }
+                        mutable.update { it.copy(qrStatus = "$reason，正在自动重试，请完成微信确认后返回 APP",
+                            events = app.store.events()) }
+                    }
+                    while (true) {
+                        val status = retryWechatQr(onRetry = onRetry) {
+                            withContext(Dispatchers.IO) { app.wechat.poll(remote, qr.id) }
+                        }
+                        when (status) {
+                            "authorized", "confirmed" -> {
+                                val account = retryWechatQr(onRetry = onRetry) {
+                                    withContext(Dispatchers.IO) { app.wechat.confirm(remote, qr.id) }
+                                }
+                                ensureActive()
+                                repository.saveWechatCodeSettings(remote.copy(accountRef = account))
+                                mutable.update { it.copy(wechatCode = repository.wechatCodeSettings(),
+                                    wechatQr = null, qrStatus = "微信已授权") }
+                                break
+                            }
+                            "expired", "cancelled", "unknown" -> error("二维码已失效，请重新生成")
+                            "scanned" -> mutable.update { it.copy(qrStatus = "已扫码，请在微信确认") }
+                            else -> mutable.update { it.copy(qrStatus = "等待微信扫码并确认登录") }
+                        }
+                        delay(1_000)
+                    }
+                }
+            } catch (_: TimeoutCancellationException) {
+                mutable.update { it.copy(qrStatus = "二维码已过期，请重新生成", wechatQr = null) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                mutable.update { it.copy(qrStatus = error.message ?: "扫码授权失败，请重试", wechatQr = null) }
+            } finally {
+                if (generation == qrGeneration) {
+                    WechatAuthorizationService.stop(app)
+                    mutable.update { it.copy(qrBusy = false, events = app.store.events()) }
+                }
+            }
+        }
+    }
+
+    fun cancelWechatQr() {
+        val id = mutable.value.wechatQr?.id
+        val remote = qrRemote
+        qrGeneration++
+        qrJob?.cancel()
+        WechatAuthorizationService.stop(app)
+        mutable.update { it.copy(wechatQr = null, qrStatus = "", qrBusy = false) }
+        if (id != null && remote != null) viewModelScope.launch(Dispatchers.IO) { runCatching { app.wechat.cancel(remote, id) } }
+    }
 
     init {
         if (repository.jar.snapshot().any { it.domain == "jzsz.uestc.edu.cn" }) refresh()
@@ -77,11 +153,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refresh() = launchOperation { loadOverview() }
 
-    fun saveWechatCode(settings: WechatCodeSettings) {
-        runCatching {
-            repository.saveWechatCodeSettings(settings)
-            mutable.update { it.copy(wechatCode = repository.wechatCodeSettings(), message = "取码配置已保存") }
-        }.onFailure { error -> mutable.update { it.copy(message = error.message) } }
+    fun pairServer(offer: ServerPairingOffer) = launchOperation {
+        if (mutable.value.qrBusy) return@launchOperation
+        val previous = repository.wechatCodeSettings()
+        val settings = withContext(Dispatchers.IO) { ServerPairingClient().pair(offer) }
+        repository.saveWechatCodeSettings(settings)
+        if (previous.endpoint == settings.endpoint && previous.accessToken.isNotBlank()) {
+            withContext(Dispatchers.IO) {
+                runCatching { ServerPairingClient().revoke(previous) }
+                    .onFailure { app.store.record("旧设备绑定未撤销，可在管理页面清理") }
+            }
+        }
+        mutable.update { it.copy(wechatCode = settings, message = "服务器已连接，请继续微信授权") }
+    }
+
+    fun disconnectServer() = launchOperation {
+        cancelWechatQr()
+        val settings = repository.wechatCodeSettings()
+        val revoked = withContext(Dispatchers.IO) { runCatching { ServerPairingClient().revoke(settings) }.isSuccess }
+        app.store.removeSecret("wechat-code")
+        val signSettings = app.store.settings().copy(autoEnabled = false)
+        app.store.saveSettings(signSettings)
+        CheckinWorker.schedule(app, false)
+        mutable.update { it.copy(wechatCode = WechatCodeSettings(), settings = signSettings,
+            message = if (revoked) "已断开服务器并关闭后台签到" else "已清除本机绑定，请在服务器管理页面撤销设备") }
     }
 
     fun testWechatAuthorization() = launchOperation {
@@ -189,6 +284,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() = launchOperation {
+        cancelWechatQr()
+        val previous = repository.wechatCodeSettings()
+        if (previous.accessToken.isNotBlank()) withContext(Dispatchers.IO) {
+            runCatching { ServerPairingClient().revoke(previous) }
+                .onFailure { app.store.record("服务器未确认撤销绑定，可在管理页面撤销设备") }
+        }
         repository.logout()
         CheckinWorker.schedule(app, false)
         mutable.update { it.copy(overview = null, signedIn = false, settings = app.store.settings(),

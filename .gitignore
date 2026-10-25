@@ -28,3 +28,6 @@ signing/
 Thumbs.db
 *.hprof
 *.log
+
+# Local development cache
+work/

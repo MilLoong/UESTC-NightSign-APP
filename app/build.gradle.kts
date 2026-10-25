@@ -57,6 +57,7 @@ android {
     }
     buildFeatures { compose = true; buildConfig = true }
 }
+
 kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
@@ -85,6 +86,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlin.coroutines.android)
     implementation(libs.gson)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
 }

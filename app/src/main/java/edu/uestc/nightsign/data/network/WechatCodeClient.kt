@@ -14,17 +14,18 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 data class WechatCodeSettings(
-    val endpoint: String = "http://127.0.0.1:18765",
+    val endpoint: String = "",
     val accessToken: String = "",
-    val mode: String? = null,
+    val mode: String? = "yyb",
+    val accountRef: String? = "",
 ) {
-    val rootMode: Boolean get() = mode == "root" || (mode == null && accessToken.isBlank())
-    val enabled: Boolean get() = rootMode || accessToken.isNotBlank()
-    override fun toString() = "WechatCodeSettings(rootMode=$rootMode, configured=$enabled)"
+    val enabled: Boolean get() = accessToken.isNotBlank() && !accountRef.isNullOrBlank()
+    override fun toString() = "WechatCodeSettings(configured=$enabled)"
 
     fun validate() {
-        require(mode == null || mode in setOf("root", "broker")) { "取码模式无效" }
-        if (!rootMode) validatedUrl()
+        require(mode == "yyb") { "请重新配置应用宝协议服务" }
+        validatedUrl()
+        require(Regex("[A-Za-z0-9_-]{1,128}").matches(accountRef.orEmpty())) { "请填写应用宝扫码账号 ID" }
     }
 
     fun validatedUrl(): HttpUrl {
@@ -51,30 +52,36 @@ class WechatCodeClient(client: OkHttpClient = OkHttpClient()) {
         .callTimeout(30, TimeUnit.SECONDS).build()
 
     fun fetchCode(settings: WechatCodeSettings): String {
-        require(!settings.rootMode) { "本机 Root 模式不能使用远程取码服务" }
+        settings.validate()
         val base = settings.validatedUrl()
         require(settings.enabled) { "请先配置微信取码服务" }
-        val payload = JsonObject().apply { addProperty("appId", ApiConstants.WECHAT_APP_ID) }
-        val request = Request.Builder().url(base.newBuilder().addPathSegments("v1/code").build())
+        val payload = JsonObject().apply {
+            addProperty("app_id", ApiConstants.WECHAT_APP_ID)
+            addProperty("ref", settings.accountRef)
+        }
+        val path = "wxapp/getCode"
+        val request = Request.Builder().url(base.newBuilder().addPathSegments(path).build())
             .header("Authorization", "Bearer ${settings.accessToken}")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
-        client.newCall(request).execute().use { response ->
+        val requestClient = client.newBuilder()
+            .readTimeout(65, TimeUnit.SECONDS).callTimeout(70, TimeUnit.SECONDS)
+            .apply { if (base.host in setOf("127.0.0.1", "localhost")) proxy(java.net.Proxy.NO_PROXY) }.build()
+        requestClient.newCall(request).execute().use { response ->
             val bytes = response.peekBody(4097).bytes()
             if (bytes.size > 4096) throw IOException("取码服务响应过大")
             val json = runCatching { JsonParser.parseString(bytes.toString(Charsets.UTF_8)).asJsonObject }.getOrNull()
             if (!response.isSuccessful) {
-                val error = runCatching { json?.get("error")?.asString }.getOrNull()
-                throw IOException(when (error) {
-                    "UNAUTHORIZED" -> "取码服务配对密钥不匹配"
-                    "TARGET_NOT_OPEN" -> "请在取码服务所在设备的微信中打开成电智慧学工"
-                    "BUSY" -> "取码服务繁忙，请稍后再试"
-                    "CDP_UNAVAILABLE", "CDP_CONNECT_TIMEOUT" -> "取码服务的微信调试通道未就绪"
-                    else -> "取码服务不可用（HTTP ${response.code}）"
+                throw IOException(when (response.code) {
+                    401, 403 -> "服务器绑定失效或账号无权限，请重新绑定并完成微信授权"
+                    409 -> "应用宝登录状态失效，请重新扫码授权"
+                    else -> "应用宝取码失败（HTTP ${response.code}），请检查账号状态"
                 })
             }
-            val appId = runCatching { json?.get("appId")?.asString }.getOrNull()
-            val code = runCatching { json?.get("code")?.asString }.getOrNull()
-            if (appId != ApiConstants.WECHAT_APP_ID || code == null || !Regex("[A-Za-z0-9_-]{24,128}").matches(code)) {
+            val code = runCatching {
+                require(json?.get("code")?.asInt == 0) { "应用宝协议请求失败" }
+                json?.getAsJsonObject("data")?.getAsJsonObject("result")?.get("code")?.asString
+            }.getOrNull()
+            if (code == null || !Regex("[A-Za-z0-9_-]{24,128}").matches(code)) {
                 throw IOException("取码服务响应无效")
             }
             return code

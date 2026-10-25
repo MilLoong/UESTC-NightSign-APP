@@ -29,7 +29,9 @@ import edu.uestc.nightsign.BuildConfig
 import edu.uestc.nightsign.MapPickerActivity
 import edu.uestc.nightsign.WebLoginActivity
 import edu.uestc.nightsign.domain.*
-import edu.uestc.nightsign.data.network.WechatCodeSettings
+import edu.uestc.nightsign.data.wechat.ServerPairingOffer
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import edu.uestc.nightsign.ui.theme.AppTheme
 import edu.uestc.nightsign.ui.theme.UestcHelperTheme
 import edu.uestc.nightsign.ui.viewmodel.MainUiState
@@ -240,38 +242,31 @@ private fun SettingsTab(state: MainUiState, viewModel: MainViewModel) {
 
 @Composable
 private fun WechatCodeSection(state: MainUiState, viewModel: MainViewModel) {
-    var endpoint by remember(state.wechatCode.endpoint) { mutableStateOf(state.wechatCode.endpoint) }
-    var token by remember(state.wechatCode.accessToken) { mutableStateOf(state.wechatCode.accessToken) }
-    var rootMode by remember(state.wechatCode) { mutableStateOf(state.wechatCode.rootMode) }
-    val edited = WechatCodeSettings(endpoint.trim(), token.trim(), if (rootMode) "root" else "broker")
-    val saved = edited.rootMode == state.wechatCode.rootMode &&
-        (rootMode || (edited.endpoint == state.wechatCode.endpoint && edited.accessToken == state.wechatCode.accessToken))
-    Text("微信授权（默认需要 Root）", style = MaterialTheme.typography.titleLarge)
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("本机 Root 取码", modifier = Modifier.weight(1f))
-        Switch(checked = rootMode, onCheckedChange = { rootMode = it }, enabled = !state.busy)
+    Text("微信授权", style = MaterialTheme.typography.titleLarge)
+    var offer by remember { mutableStateOf<ServerPairingOffer?>(null) }
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.let { raw ->
+            runCatching { ServerPairingOffer.parse(raw) }.onSuccess { offer = it }
+                .onFailure { viewModel.showMessage(it.message ?: "绑定码无效") }
+        }
     }
-    if (rootMode) {
-        Text("需要已 Root 的手机、授予本应用 su 权限，以及兼容当前微信版本的取码适配组件。请在手机微信登录并打开成电智慧学工。Root 权限本身不能替代微信适配组件。",
-            style = MaterialTheme.typography.bodySmall)
-    } else {
-        Text("使用已有取码服务。仅获取一次性 code，学校 Cookie 不发送给取码服务。",
-            style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(endpoint, { endpoint = it }, label = { Text("取码服务地址") },
-            singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(token, { token = it }, label = { Text("配对密钥（加密保存）") }, singleLine = true,
-            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        Text("回环地址可用于本机服务或 USB 转发。远程地址必须为 HTTPS。",
-            style = MaterialTheme.typography.bodySmall)
-    }
+    val connected = state.wechatCode.accessToken.isNotBlank()
+    if (connected) Text("已连接：${state.wechatCode.endpoint}", style = MaterialTheme.typography.bodySmall)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { viewModel.saveWechatCode(edited) }, enabled = !state.busy) { Text("保存取码配置") }
-        OutlinedButton(onClick = viewModel::testWechatAuthorization,
-            enabled = !state.busy && state.wechatCode.enabled && saved) { Text("仅测试授权") }
+        Button(onClick = { scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            .setPrompt("扫描服务器管理页面的绑定二维码").setBeepEnabled(false).setOrientationLocked(false)) },
+            enabled = !state.busy && !state.qrBusy) { Text(if (connected) "重新绑定服务器" else "扫码连接服务器") }
+        if (connected) TextButton(onClick = viewModel::disconnectServer,
+            enabled = !state.busy && !state.qrBusy) { Text("断开连接") }
     }
-    Text("测试只取票，不提交签到。不缓存 code 或 ticket，每次提交前重新获取。",
-        style = MaterialTheme.typography.bodySmall)
-    TextButton(onClick = { viewModel.saveWechatCode(WechatCodeSettings(mode = "root")) }, enabled = !state.busy) { Text("恢复本机 Root 模式") }
+    if (connected) {
+        WechatAuthorizationSection(state, viewModel)
+        Text("测试授权不会提交签到。", style = MaterialTheme.typography.bodySmall)
+    }
+    offer?.let { pending -> AlertDialog(onDismissRequest = { offer = null },
+        title = { Text("连接服务器") }, text = { Text("确认信任此服务器？\n${pending.endpoint}") },
+        confirmButton = { TextButton(onClick = { offer = null; viewModel.pairServer(pending) }) { Text("信任并连接") } },
+        dismissButton = { TextButton(onClick = { offer = null }) { Text("取消") } }) }
 }
 
 @Composable

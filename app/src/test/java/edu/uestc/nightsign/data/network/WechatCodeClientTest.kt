@@ -18,7 +18,7 @@ class WechatCodeClientTest {
     private val code = "b".repeat(32)
     @Before fun setUp() { server = MockWebServer(); server.start() }
     @After fun tearDown() { server.shutdown() }
-    private fun settings() = WechatCodeSettings(server.url("/").toString(), token)
+    private fun settings() = WechatCodeSettings(server.url("/").toString(), token, mode = "yyb", accountRef = "1")
 
     @Test fun fetchesOnlyCodeWithoutSendingSchoolCookies() {
         val jar = object : CookieJar {
@@ -27,15 +27,15 @@ class WechatCodeClientTest {
                 .value("school-secret").hostOnlyDomain(url.host).build())
         }
         val client = WechatCodeClient(OkHttpClient.Builder().cookieJar(jar).build())
-        server.enqueue(MockResponse().setBody("""{"appId":"${ApiConstants.WECHAT_APP_ID}","code":"$code"}"""))
+        server.enqueue(MockResponse().setBody("""{"code":0,"data":{"result":{"code":"$code"}}}"""))
         assertEquals(code, client.fetchCode(settings()))
         val request = server.takeRequest()
-        assertEquals("/v1/code", request.path)
+        assertEquals("/wxapp/getCode", request.path)
         assertEquals("Bearer $token", request.getHeader("Authorization"))
         assertNull(request.getHeader("Cookie"))
         assertNull(request.getHeader("X-Checkin-Ticket"))
         val body = JsonParser.parseString(request.body.readUtf8()).asJsonObject
-        assertEquals(setOf("appId"), body.keySet())
+        assertEquals(setOf("app_id", "ref"), body.keySet())
     }
 
     @Test fun rejectsWrongAppAndInvalidCodeWithoutEchoingResponse() {
@@ -60,7 +60,8 @@ class WechatCodeClientTest {
             assertTrue(runCatching { WechatCodeSettings(url, token).validatedUrl() }.isFailure)
         }
         assertEquals("example.com", WechatCodeSettings("https://example.com", token).validatedUrl().host)
-        assertEquals("127.0.0.1", WechatCodeSettings(accessToken = token).validatedUrl().host)
+        assertTrue(runCatching { WechatCodeSettings(accessToken = token).validatedUrl() }.isFailure)
+        assertEquals("127.0.0.1", WechatCodeSettings("http://127.0.0.1:18767", token).validatedUrl().host)
         assertFalse(settings().toString().contains(token))
     }
 
@@ -77,5 +78,28 @@ class WechatCodeClientTest {
         assertFalse(error.message!!.contains("secret-cookie"))
         server.enqueue(MockResponse().setBody("s".repeat(4097)))
         assertTrue(runCatching { WechatCodeClient().fetchCode(settings()) }.isFailure)
+    }
+
+    @Test fun yybProtocolUsesTargetAppAndAccountWithoutSchoolCookies() {
+        val config = settings().copy(mode = "yyb", accountRef = "1")
+        server.enqueue(MockResponse().setBody("""{"code":0,"data":{"openid":"fixture","result":{"code":"$code","errMsg":"login:ok"}}}"""))
+        assertEquals(code, WechatCodeClient().fetchCode(config))
+        val request = server.takeRequest()
+        assertEquals("/wxapp/getCode", request.path)
+        assertNull(request.getHeader("Cookie"))
+        assertEquals("Bearer $token", request.getHeader("Authorization"))
+        val body = JsonParser.parseString(request.body.readUtf8()).asJsonObject
+        assertEquals(ApiConstants.WECHAT_APP_ID, body.get("app_id").asString)
+        assertEquals("1", body.get("ref").asString)
+        assertEquals(setOf("ref", "app_id"), body.keySet())
+    }
+
+    @Test fun yybRejectsMissingAccountAndDoesNotExposeRemoteErrors() {
+        assertTrue(runCatching { WechatCodeClient().fetchCode(settings().copy(mode = "yyb", accountRef = "")) }.isFailure)
+        assertEquals(0, server.requestCount)
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"secret-session"}"""))
+        val error = runCatching { WechatCodeClient().fetchCode(settings().copy(mode = "yyb", accountRef = "1")) }.exceptionOrNull()!!
+        assertFalse(error.message!!.contains("secret-session"))
+        assertTrue(error.message!!.contains("重新扫码"))
     }
 }
