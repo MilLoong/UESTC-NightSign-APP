@@ -30,6 +30,8 @@ data class ServerPairingOffer(val endpoint: String, val code: String) {
     }
 }
 
+data class ServerAuthorizationStatus(val authorized: Boolean, val ref: String?, val status: String)
+
 class ServerPairingClient(client: OkHttpClient = OkHttpClient()) {
     private val client = client.newBuilder().cookieJar(CookieJar.NO_COOKIES)
         .authenticator(Authenticator.NONE).proxyAuthenticator(Authenticator.NONE)
@@ -57,6 +59,26 @@ class ServerPairingClient(client: OkHttpClient = OkHttpClient()) {
                 }
             } catch (_: Exception) { throw IOException("服务器绑定响应无效") }
             return WechatCodeSettings(endpoint = checked.endpoint, accessToken = token)
+        }
+    }
+
+    fun status(settings: WechatCodeSettings): ServerAuthorizationStatus {
+        val request = Request.Builder().url(settings.validatedUrl().newBuilder().encodedPath("/v1/device").build())
+            .header("Authorization", "Bearer ${settings.accessToken}").build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException(if (response.code in listOf(401, 403))
+                "服务器绑定已失效，请重新扫码连接" else "同步授权状态失败（HTTP ${response.code}）")
+            val bytes = response.peekBody(4097).bytes()
+            if (bytes.size > 4096) throw IOException("服务器状态响应过大")
+            return try {
+                val json = JsonParser.parseString(bytes.toString(Charsets.UTF_8)).asJsonObject
+                require(json.get("code").asInt == 0)
+                val data = json.getAsJsonObject("data")
+                val authorized = data.get("authorized").asBoolean
+                val ref = data.get("ref")?.takeUnless { it.isJsonNull }?.asString
+                require(if (authorized) Regex("[A-Za-z0-9_-]{1,128}").matches(ref.orEmpty()) else ref.isNullOrEmpty())
+                ServerAuthorizationStatus(authorized, ref, data.get("status").asString)
+            } catch (_: Exception) { throw IOException("服务器授权状态无效") }
         }
     }
 

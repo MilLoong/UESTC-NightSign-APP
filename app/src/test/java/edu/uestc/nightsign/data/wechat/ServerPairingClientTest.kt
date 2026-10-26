@@ -50,4 +50,36 @@ class ServerPairingClientTest {
         }
         assertFalse(error.message!!.contains("secret"))
     }
+    @Test fun readsServerAuthorizationWithoutRequestingAQr() {
+        val token = "d".repeat(43)
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            assertEquals("GET", chain.request().method)
+            assertEquals("/v1/device", chain.request().url.encodedPath)
+            assertEquals("Bearer $token", chain.request().header("Authorization"))
+            assertNull(chain.request().header("Cookie"))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"code":0,"data":{"authorized":true,"ref":"42","status":"confirmed"}}""".toResponseBody()).build()
+        }.build()
+        val status = ServerPairingClient(http).status(edu.uestc.nightsign.data.network.WechatCodeSettings("https://private.example.org", token))
+        assertTrue(status.authorized)
+        assertEquals("42", status.ref)
+    }
+    @Test fun acceptsPendingStatusWithNoAccount() {
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"code":0,"data":{"authorized":false,"ref":null,"status":"pending"}}""".toResponseBody()).build()
+        }.build()
+        val status = ServerPairingClient(http).status(edu.uestc.nightsign.data.network.WechatCodeSettings("https://private.example.org", "d".repeat(43)))
+        assertFalse(status.authorized)
+        assertNull(status.ref)
+    }
+    @Test fun rejectsAnAuthorizedStatusWithoutAnAccount() {
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"code":0,"data":{"authorized":true,"ref":null,"status":"confirmed"}}""".toResponseBody()).build()
+        }.build()
+        assertThrows(java.io.IOException::class.java) {
+            ServerPairingClient(http).status(edu.uestc.nightsign.data.network.WechatCodeSettings("https://private.example.org", "d".repeat(43)))
+        }
+    }
 }

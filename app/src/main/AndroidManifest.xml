@@ -6,13 +6,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <queries><package android:name="com.tencent.mm" /></queries>
     <application android:name=".NightSignApp" android:label="晚安成电" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false" android:networkSecurityConfig="@xml/network_security_config" android:icon="@drawable/ic_moon">
         <activity android:name=".WebLoginActivity" android:exported="false" />
         <activity android:name=".QrScannerActivity" android:exported="false" android:screenOrientation="portrait" android:theme="@style/zxing_CaptureTheme" />
-        <service android:name=".WechatAuthorizationService" android:exported="false" android:foregroundServiceType="dataSync" />
         <activity android:name=".MapPickerActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>

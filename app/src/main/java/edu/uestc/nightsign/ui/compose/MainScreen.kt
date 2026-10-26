@@ -24,6 +24,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import androidx.lifecycle.viewmodel.compose.viewModel
 import edu.uestc.nightsign.BuildConfig
 import edu.uestc.nightsign.MapPickerActivity
@@ -252,17 +256,28 @@ private fun WechatCodeSection(state: MainUiState, viewModel: MainViewModel) {
         }
     }
     val connected = state.wechatCode.accessToken.isNotBlank()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(state.wechatCode.accessToken, lifecycle) {
+        if (connected) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) { viewModel.refreshWechatAuthorization(); delay(5000) }
+        }
+    }
     if (connected) Text("已连接：${state.wechatCode.endpoint}", style = MaterialTheme.typography.bodySmall)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
             .setCaptureActivity(QrScannerActivity::class.java)
             .setPrompt("扫描服务器管理页面的绑定二维码").setBeepEnabled(false).setOrientationLocked(true)) },
-            enabled = !state.busy && !state.qrBusy) { Text(if (connected) "重新绑定服务器" else "扫码连接服务器") }
+            enabled = !state.busy) { Text(if (connected) "重新绑定服务器" else "扫码连接服务器") }
         if (connected) TextButton(onClick = viewModel::disconnectServer,
-            enabled = !state.busy && !state.qrBusy) { Text("断开连接") }
+            enabled = !state.busy) { Text("断开连接") }
     }
     if (connected) {
-        WechatAuthorizationSection(state, viewModel)
+        Text(state.serverAuthorization.ifBlank { if (state.wechatCode.enabled) "微信已授权" else "请在服务器管理页完成微信授权" })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = viewModel::refreshWechatAuthorization, enabled = !state.busy) { Text("刷新授权状态") }
+            OutlinedButton(onClick = viewModel::testWechatAuthorization,
+                enabled = !state.busy && state.wechatCode.enabled) { Text("仅测试授权") }
+        }
         Text("测试授权不会提交签到。", style = MaterialTheme.typography.bodySmall)
     }
     offer?.let { pending -> AlertDialog(onDismissRequest = { offer = null },

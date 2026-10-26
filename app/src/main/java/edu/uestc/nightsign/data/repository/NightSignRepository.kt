@@ -30,11 +30,11 @@ class NightSignRepository(val store: PrivateStore) {
     private val mutex = Mutex()
     private val gson = Gson()
 
-    fun wechatCodeSettings(): WechatCodeSettings = runCatching {
+    @Synchronized fun wechatCodeSettings(): WechatCodeSettings = runCatching {
         gson.fromJson(store.secret("wechat-code"), WechatCodeSettings::class.java) ?: WechatCodeSettings()
     }.getOrDefault(WechatCodeSettings()).let { if (it.mode == "yyb") it else WechatCodeSettings() }
 
-    fun saveWechatCodeSettings(settings: WechatCodeSettings) {
+    @Synchronized fun saveWechatCodeSettings(settings: WechatCodeSettings) {
         settings.validatedUrl()
         require(settings.mode == "yyb") { "取码模式无效" }
         if (!settings.accountRef.isNullOrBlank()) settings.validate()
@@ -42,10 +42,26 @@ class NightSignRepository(val store: PrivateStore) {
         else store.removeSecret("wechat-code")
     }
 
-    private fun acquireWechatTicket(): String {
+    @Synchronized fun clearWechatCodeSettings() { store.removeSecret("wechat-code") }
+
+    private fun synchronizeWechatAuthorization(): edu.uestc.nightsign.data.wechat.ServerAuthorizationStatus {
         val settings = wechatCodeSettings()
-        require(settings.enabled) { "请先配置微信取码服务并测试授权" }
-        val code = codeClient.fetchCode(settings)
+        require(settings.accessToken.isNotBlank()) { "请先扫码连接服务器" }
+        val status = edu.uestc.nightsign.data.wechat.ServerPairingClient().status(settings)
+        synchronized(this) {
+            check(wechatCodeSettings() == settings) { "服务器配置已更改，请重试" }
+            saveWechatCodeSettings(settings.copy(accountRef = status.ref.orEmpty()))
+        }
+        return status
+    }
+
+    suspend fun syncWechatAuthorization() = withContext(Dispatchers.IO) {
+        mutex.withLock { synchronizeWechatAuthorization() }
+    }
+
+    private fun acquireWechatTicket(): String {
+        require(synchronizeWechatAuthorization().authorized) { "请先在服务器管理页完成微信授权" }
+        val code = codeClient.fetchCode(wechatCodeSettings())
         return api.requestCheckinTicket(code)
     }
 
