@@ -9,6 +9,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ServerPairingClientTest {
+    @Test fun sendsInstallationKeyAndMigrationProofButNeverThePreviousBearer() {
+        val oldToken = "t".repeat(43)
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            val buffer = okio.Buffer()
+            chain.request().body!!.writeTo(buffer)
+            val raw = buffer.readUtf8()
+            val body = com.google.gson.JsonParser.parseString(raw).asJsonObject
+            assertEquals("k".repeat(43), body.get("installation_key").asString)
+            assertEquals("mBaGOTEQDoUa0xTzmmNlIwA_0d-meqLKva6Y208DL-U", body.get("previous_proof").asString)
+            assertFalse(raw.contains(oldToken))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"code":0,"data":{"token":"${"d".repeat(43)}","device_id":"existing-device","ref":"42"}}""".toResponseBody()).build()
+        }.build()
+        val settings = ServerPairingClient(http).pair(ServerPairingOffer("https://new.example.org", "c".repeat(43), "s".repeat(43)),
+            "k".repeat(43), edu.uestc.nightsign.data.network.WechatCodeSettings("https://old.example.org", oldToken))
+        assertTrue(settings.enabled)
+        assertEquals("42", settings.accountRef)
+    }
     private val code = "c".repeat(43)
     private fun payload(server: String = "https://private.example.org", version: Int = 1) = JsonObject().apply {
         addProperty("kind", "uestc-nightsign-pair"); addProperty("version", version)

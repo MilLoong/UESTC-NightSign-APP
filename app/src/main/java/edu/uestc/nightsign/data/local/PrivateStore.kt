@@ -44,6 +44,12 @@ class PrivateStore(context: Context) {
     }
 
     fun removeSecret(name: String) { prefs.edit().remove(name).apply() }
+    @Synchronized fun installationSeed(): String = secret("installation-seed-v1") ?: run {
+        val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes).also {
+            putSecret("installation-seed-v1", it)
+        }
+    }
     fun settings(): SignSettings = runCatching {
         gson.fromJson(secret("settings"), SignSettings::class.java) ?: SignSettings()
     }.getOrDefault(SignSettings())

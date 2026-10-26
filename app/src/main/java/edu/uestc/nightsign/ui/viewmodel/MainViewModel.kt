@@ -11,6 +11,7 @@ import edu.uestc.nightsign.data.network.SessionExpiredException
 import edu.uestc.nightsign.data.network.WechatCodeSettings
 import edu.uestc.nightsign.data.wechat.ServerPairingClient
 import edu.uestc.nightsign.data.wechat.ServerPairingOffer
+import edu.uestc.nightsign.data.wechat.PairingIdentity
 import edu.uestc.nightsign.data.update.AppUpdateChecker
 import edu.uestc.nightsign.data.update.UpdateReminderStorage
 import edu.uestc.nightsign.domain.*
@@ -96,16 +97,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun pairServer(offer: ServerPairingOffer) = launchOperation {
         authorizationSync?.cancelAndJoin()
         val previous = repository.wechatCodeSettings()
-        val settings = withContext(Dispatchers.IO) { ServerPairingClient().pair(offer) }
+        val settings = withContext(Dispatchers.IO) {
+            val key = PairingIdentity.installationKey(app.store.installationSeed(), offer)
+            ServerPairingClient().pair(offer, key, previous)
+        }
         repository.saveWechatCodeSettings(settings)
-        if (previous.endpoint == settings.endpoint && previous.accessToken.isNotBlank()) {
+        if (offer.serverId == null && previous.endpoint == settings.endpoint && previous.accessToken.isNotBlank()) {
             withContext(Dispatchers.IO) {
                 runCatching { ServerPairingClient().revoke(previous) }
                     .onFailure { app.store.record("旧设备绑定未撤销，可在管理页面清理") }
             }
         }
-        mutable.update { it.copy(wechatCode = settings, serverAuthorization = "请在服务器管理页完成微信授权",
-            message = "服务器已连接，请在管理页完成微信授权") }
+        mutable.update { it.copy(wechatCode = settings,
+            serverAuthorization = if (settings.enabled) "微信已授权" else "请在服务器管理页完成微信授权",
+            message = if (settings.enabled) "服务器已连接，微信授权已保留" else "服务器已连接，请在管理页完成微信授权") }
     }
 
     fun disconnectServer() = launchOperation {

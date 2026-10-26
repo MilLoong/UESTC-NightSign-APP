@@ -13,7 +13,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-data class ServerPairingOffer(val endpoint: String, val code: String) {
+data class ServerPairingOffer(val endpoint: String, val code: String, val serverId: String? = null) {
     override fun toString() = "ServerPairingOffer(redacted)"
     companion object {
         fun parse(raw: String): ServerPairingOffer = try {
@@ -25,7 +25,9 @@ data class ServerPairingOffer(val endpoint: String, val code: String) {
                 url.encodedPath == "/" && url.query == null && url.fragment == null)
             val code = data.get("code").asString
             require(Regex("[A-Za-z0-9_-]{43}").matches(code))
-            ServerPairingOffer(url.toString().trimEnd('/'), code)
+            val serverId = data.get("server_id")?.takeUnless { it.isJsonNull }?.asString
+            require(serverId == null || Regex("[A-Za-z0-9_-]{43}").matches(serverId))
+            ServerPairingOffer(url.toString().trimEnd('/'), code, serverId)
         } catch (_: Exception) { throw IllegalArgumentException("不是有效的晚安成电服务器绑定码") }
     }
 }
@@ -38,27 +40,41 @@ class ServerPairingClient(client: OkHttpClient = OkHttpClient()) {
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .connectTimeout(10, TimeUnit.SECONDS).callTimeout(20, TimeUnit.SECONDS).build()
 
-    fun pair(offer: ServerPairingOffer): WechatCodeSettings {
+    fun pair(offer: ServerPairingOffer, installationKey: String? = null,
+        previous: WechatCodeSettings? = null): WechatCodeSettings {
         // Validate even when the offer was constructed without using the scanner parser.
         val checked = ServerPairingOffer.parse(JsonObject().apply {
             addProperty("kind", "uestc-nightsign-pair"); addProperty("version", 1)
             addProperty("server", offer.endpoint); addProperty("code", offer.code)
+            offer.serverId?.let { addProperty("server_id", it) }
         }.toString())
-        val body = JsonObject().apply { addProperty("code", checked.code) }
+        val body = JsonObject().apply {
+            addProperty("code", checked.code)
+            installationKey?.let { key ->
+                require(Regex("[A-Za-z0-9_-]{43}").matches(key))
+                addProperty("installation_key", key)
+                previous?.accessToken?.takeIf { Regex("[A-Za-z0-9_-]{43,128}").matches(it) }?.let { token ->
+                    addProperty("previous_proof", PairingIdentity.previousProof(token, checked.code, key))
+                }
+            }
+        }
         val request = Request.Builder().url(checked.endpoint + "/v1/pair")
             .post(body.toString().toRequestBody("application/json".toMediaType())).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException(if (response.code == 400) "绑定码已过期或已使用，请刷新服务端页面" else "连接服务器失败（HTTP ${response.code}）")
             val bytes = response.peekBody(4097).bytes()
             if (bytes.size > 4096) throw IOException("服务器绑定响应过大")
-            val token = try {
+            val issued = try {
                 val json = JsonParser.parseString(bytes.toString(Charsets.UTF_8)).asJsonObject
                 require(json.get("code").asInt == 0)
-                json.getAsJsonObject("data").get("token").asString.also {
-                    require(Regex("[A-Za-z0-9_-]{43,128}").matches(it))
-                }
+                val data = json.getAsJsonObject("data")
+                val token = data.get("token").asString
+                require(Regex("[A-Za-z0-9_-]{43,128}").matches(token))
+                val ref = data.get("ref")?.takeUnless { it.isJsonNull }?.asString
+                require(ref == null || Regex("[A-Za-z0-9_-]{1,128}").matches(ref))
+                token to ref
             } catch (_: Exception) { throw IOException("服务器绑定响应无效") }
-            return WechatCodeSettings(endpoint = checked.endpoint, accessToken = token)
+            return WechatCodeSettings(endpoint = checked.endpoint, accessToken = issued.first, accountRef = issued.second.orEmpty())
         }
     }
 
