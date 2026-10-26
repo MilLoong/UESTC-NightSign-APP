@@ -80,8 +80,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.authorizeLocalWechat(localCancelled,
                     { image -> mutable.update { it.copy(wechatQr = image) } },
                     { message -> mutable.update { it.copy(wechatProgress = message) } })
+                loadOverview()
                 mutable.update { it.copy(localWechatAuthorized = app.localWechat.authorized,
-                    message = "微信授权成功") }
+                    message = "微信登录成功") }
             } finally {
                 mutable.update { it.copy(wechatQr = null, wechatProgress = "",
                     localWechatAuthorized = app.localWechat.authorized) }
@@ -169,6 +170,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun testWechatAuthorization() = launchOperation {
         repository.testWechatAuthorization()
+        loadOverview()
         mutable.update { it.copy(wechatCode = repository.wechatCodeSettings(), serverAuthorization = "微信已授权",
             message = "微信授权验证成功") }
     }
@@ -277,7 +279,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.logout()
         CheckinWorker.schedule(app, false)
         mutable.update { it.copy(overview = null, signedIn = false, settings = app.store.settings(),
-            wechatCode = repository.wechatCodeSettings(), serverAuthorization = "", message = "已退出登录") }
+            localWechatAuthorized = false, wechatCode = repository.wechatCodeSettings(), serverAuthorization = "", message = "已退出登录") }
     }
     fun clearMessage() { mutable.update { it.copy(message = null) } }
 

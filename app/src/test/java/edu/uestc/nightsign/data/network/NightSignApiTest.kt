@@ -22,6 +22,30 @@ class NightSignApiTest {
     @After fun tearDown() { server.shutdown() }
     private fun respond(body: String) = server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(body))
 
+    @Test fun wechatSessionBootstrapNeverSendsOldCookie() {
+        val jar = InMemoryCookieJar()
+        jar.saveFromResponse(server.url("/"), listOf(okhttp3.Cookie.Builder()
+            .name("SESSION").value("old-session-value").hostOnlyDomain(server.hostName).path("/").build()))
+        val bootstrap = NightSignApi(OkHttpClient.Builder().cookieJar(jar).build(), server.url("/").toString().trimEnd('/'))
+        respond("""{"code":0,"data":{"bind":true,"sessionId":"new-session-value"}}""")
+        assertEquals("new-session-value", bootstrap.sessionFromWechat("c".repeat(32)))
+        val request = server.takeRequest()
+        assertNull(request.getHeader("Cookie"))
+        assertEquals("mp-weixin", request.getHeader("Platform"))
+        assertEquals("/platform-app/api/auth/check-bind", request.path)
+        assertEquals("", JsonParser.parseString(request.body.readUtf8()).asJsonObject.get("sn").asString)
+    }
+
+    @Test fun wechatSessionRejectsUnboundIdentity() {
+        respond("""{"code":0,"data":{"bind":false}}""")
+        assertTrue(runCatching { api.sessionFromWechat("c".repeat(32)) }.isFailure)
+    }
+
+    @Test fun wechatSessionRejectsMalformedSession() {
+        respond("""{"code":0,"data":{"bind":true,"sessionId":"bad"}}""")
+        assertTrue(runCatching { api.sessionFromWechat("c".repeat(32)) }.isFailure)
+    }
+
     @Test fun parsesOnlyRequiredStatusFields() {
         respond("""{"code":0,"data":{"businessDate":"2026-10-21","recordStatusCode":"PENDING","checkinTime":null,"studentMobile":"not-to-be-kept"}}""")
         val status = api.today()

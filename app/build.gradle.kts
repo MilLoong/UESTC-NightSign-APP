@@ -24,8 +24,8 @@ android {
         applicationId = "com.milloong.uestc.nightsign"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 8
+        versionName = "0.1.7"
         val localProperties = Properties().apply {
             val file = rootProject.file("local.properties")
             if (file.exists()) file.inputStream().use { load(it) }

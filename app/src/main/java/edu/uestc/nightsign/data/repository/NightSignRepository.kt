@@ -67,25 +67,46 @@ class NightSignRepository(val store: PrivateStore,
         mutex.withLock { synchronizeWechatAuthorization() }
     }
 
-    private fun acquireWechatTicket(): String {
-        val code = edu.uestc.nightsign.data.wechat.fetchCodeForMode(wechatMode(),
-            local = { localWechat.fetchCode(schoolSession()) }, server = {
+    private fun fetchWechatCode(): String = edu.uestc.nightsign.data.wechat.fetchCodeForMode(wechatMode(),
+            local = { localWechat.fetchCode("") }, server = {
             require(synchronizeWechatAuthorization().authorized) { "请先在服务器管理页完成微信授权" }
             codeClient.fetchCode(wechatCodeSettings())
         })
-        return api.requestCheckinTicket(code)
+
+    private fun acquireWechatTicket(): String {
+        return api.requestCheckinTicket(fetchWechatCode())
     }
 
-    private fun schoolSession(): String = jar.loadForRequest(ApiConstants.PLATFORM_ORIGIN.toHttpUrl())
-        .firstOrNull { it.name == "SESSION" }?.value ?: throw IOException("请先登录学校账号")
+    private fun restoreWechatSession(code: String = fetchWechatCode()) {
+        val previous = jar.snapshot()
+        val sid = api.sessionFromWechat(code)
+        try {
+            val url = ApiConstants.PLATFORM_ORIGIN.toHttpUrl()
+            jar.clearHost(url.host)
+            jar.saveFromResponse(url, listOf(Cookie.Builder().name("SESSION").value(sid)
+                .hostOnlyDomain(url.host).path("/").secure().httpOnly().build()))
+            val status = api.today()
+            val identity = status.studentSn
+            check(identity.isNotBlank()) { "学校身份响应无效" }
+            val expected = store.secret("school-identity")
+            check(expected.isNullOrBlank() || expected == identity) { "微信绑定的学校账号不同，请先退出原账号再登录" }
+            store.putSecret("school-identity", identity)
+            store.needsLogin = false
+            persistSession()
+        } catch (error: Exception) {
+            jar.clearAll()
+            previous.forEach { cookie -> jar.saveFromResponse("https://${cookie.domain.removePrefix(".")}${cookie.path}".toHttpUrl(), listOf(cookie)) }
+            throw error
+        }
+    }
 
     suspend fun authorizeLocalWechat(cancelled: java.util.concurrent.atomic.AtomicBoolean,
         showQr: (String) -> Unit, progress: (String) -> Unit) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            prepareSession(false)
-            val code = localWechat.fetchCode(schoolSession(), true, cancelled, showQr, progress)
+            val code = localWechat.fetchCode("", true, cancelled, showQr, progress)
             currentCoroutineContext().ensureActive()
-            api.requestCheckinTicket(code)
+            restoreWechatSession(code)
+            api.requestCheckinTicket(localWechat.fetchCode(""))
             store.record("手机本地微信授权成功（未提交签到）")
         }
     }
@@ -134,6 +155,7 @@ class NightSignRepository(val store: PrivateStore,
                     api.warmUp()
                     api.enterApp()
                     val today = api.today()
+                    store.putSecret("school-identity", today.studentSn)
                     store.lastSuccess = if (today.checkedIn && !today.abnormal) today.businessDate else ""
                     persistSession()
                     if (remember) store.putSecret("account", gson.toJson(SavedAccount(user, password)))
@@ -148,6 +170,19 @@ class NightSignRepository(val store: PrivateStore,
         }
 
     private suspend fun prepareSession(allowAutoLogin: Boolean) {
+        if (localWechat.authorized && wechatMode() == "local" ||
+            wechatMode() == "server" && wechatCodeSettings().accessToken.isNotBlank()) {
+            try {
+                val status = api.today()
+                val expected = store.secret("school-identity")
+                check(expected.isNullOrBlank() || expected == status.studentSn) { "学校账号已变化，请先退出原账号再登录" }
+                if (status.studentSn.isNotBlank()) store.putSecret("school-identity", status.studentSn)
+                return
+            } catch (_: SessionExpiredException) {
+                restoreWechatSession()
+                return
+            }
+        }
         try {
             api.warmUp()
             api.enterApp()
@@ -237,6 +272,7 @@ class NightSignRepository(val store: PrivateStore,
             api.warmUp()
             api.enterApp()
             val today = api.today()
+            store.putSecret("school-identity", today.studentSn)
             store.lastSuccess = if (today.checkedIn && !today.abnormal) today.businessDate else ""
             persistSession()
             store.needsLogin = false
@@ -250,9 +286,11 @@ class NightSignRepository(val store: PrivateStore,
             store.removeSecret("cookies")
             store.removeSecret("account")
             store.lastSuccess = ""
+            store.removeSecret("school-identity")
+            localWechat.clear()
             store.removeSecret("wechat-code")
             store.needsLogin = false
-            store.saveSettings(store.settings().copy(autoEnabled = false))
+            store.saveSettings(SignSettings())
             store.record("已退出登录并关闭后台签到")
         }
         withContext(Dispatchers.Main) {

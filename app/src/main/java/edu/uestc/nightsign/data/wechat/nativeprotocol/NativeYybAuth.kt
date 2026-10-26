@@ -142,10 +142,10 @@ internal class NativeYybAuth(private val cancelled: AtomicBoolean, private val p
         error("OAUTH_REDIRECT_LIMIT")
     }
     fun getCode(session: String, cache: String?, allowQr: Boolean): String {
-        progress("正在核对学校登录身份…")
-        val userId = jsonGet("https://jzsz.uestc.edu.cn/daily-checkin/api/auth/user-info", session)["id"].asString
+        val userId = if (session.isBlank()) "" else
+            jsonGet("https://jzsz.uestc.edu.cn/daily-checkin/api/auth/user-info", session)["id"].asString
         var credentials = runCatching { JsonParser.parseString(cache.orEmpty()).asJsonObject }.getOrNull()
-            ?.takeIf { it["school_user_id"]?.asString == userId }
+            ?.takeIf { userId.isBlank() || it["school_user_id"]?.asString == userId }
         if (credentials == null) {
             check(allowQr) { "AUTHORIZATION_REQUIRED" }
             credentials = authorize(userId)

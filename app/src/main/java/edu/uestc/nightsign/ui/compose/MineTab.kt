@@ -25,6 +25,7 @@ fun MineTab(
     state: MainUiState,
     enabled: Boolean,
     onLogin: () -> Unit,
+    onWechatLogin: () -> Unit,
     onLogout: () -> Unit,
     onWebLogin: () -> Unit,
     onCheckUpdate: () -> Unit,
@@ -53,9 +54,13 @@ fun MineTab(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                Button(onClick = onLogin, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-                    Text("账号登录")
+                Button(onClick = onWechatLogin, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                    Text("微信登录")
                 }
+            }
+            Text("其他登录方式", style = MaterialTheme.typography.labelMedium)
+            OutlinedButton(onClick = onLogin, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                Text("学校账号登录（CAS）")
             }
             OutlinedButton(onClick = onWebLogin, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
                 Text("网页登录")

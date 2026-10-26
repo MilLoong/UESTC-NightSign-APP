@@ -95,6 +95,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             state = state,
                             enabled = !state.busy,
                             onLogin = viewModel::showLogin,
+                            onWechatLogin = { tab = 1 },
                             onLogout = viewModel::logout,
                             onWebLogin = { web.launch(Intent(context, WebLoginActivity::class.java)) },
                             onCheckUpdate = { viewModel.checkAppUpdate(force = true) },
@@ -286,7 +287,7 @@ private fun WechatCodeSection(state: MainUiState, viewModel: MainViewModel) {
     Text("请在另一个屏幕展示二维码，再用微信扫码。", style = MaterialTheme.typography.bodySmall)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = viewModel::authorizeLocalWechat, enabled = !state.busy) {
-            Text(if (state.localWechatAuthorized) "验证授权" else "微信授权")
+            Text(if (state.localWechatAuthorized && state.signedIn) "验证授权" else "微信登录")
         }
         if (state.localWechatAuthorized) TextButton(onClick = viewModel::clearLocalWechat,
             enabled = !state.busy) { Text("清除授权") }

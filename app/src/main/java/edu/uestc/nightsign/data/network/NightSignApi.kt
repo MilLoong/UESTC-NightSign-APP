@@ -76,6 +76,7 @@ class NightSignApi(
                 throw CheckinAuthorizationException(diagnostic("WECHAT_AUTH", "需要微信小程序打卡授权"))
             }
             if (response.code in listOf(301, 302, 303, 307, 308, 401) || code == 4001 ||
+                (code == 5000 && listOf("未登录", "会话已失效", "会话无效").any { message.contains(it) }) ||
                 response.request.url.host != origin.toHttpUrl().host) {
                 throw SessionExpiredException(diagnostic("SESSION", "登录状态已过期，请重新登录"))
             }
@@ -90,6 +91,18 @@ class NightSignApi(
 
     fun warmUp() {
         request("${ApiConstants.WARMUP}?_t=${System.currentTimeMillis()}", portal = true)
+    }
+
+    fun sessionFromWechat(code: String): String {
+        require(Regex("[A-Za-z0-9_-]{24,128}").matches(code))
+        val body = JsonObject().apply { addProperty("code", code); addProperty("sn", "") }
+        val cleanApi = NightSignApi(client.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES).build(), origin)
+        val data = cleanApi.request("/platform-app/api/auth/check-bind", body, platform = "mp-weixin")
+            .getAsJsonObject("data") ?: throw IOException("学校登录响应无效")
+        if (data.get("bind")?.asBoolean != true) throw IOException("请先在成电智慧学工小程序绑定学校身份")
+        return data.text("sessionId").also {
+            if (!Regex("[A-Za-z0-9._-]{10,256}").matches(it)) throw IOException("学校会话响应无效")
+        }
     }
 
     fun requestCheckinTicket(code: String): String {
