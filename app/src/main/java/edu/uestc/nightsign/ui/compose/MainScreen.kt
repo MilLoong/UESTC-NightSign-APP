@@ -32,6 +32,7 @@ import edu.uestc.nightsign.domain.*
 import edu.uestc.nightsign.data.wechat.ServerPairingOffer
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import edu.uestc.nightsign.QrScannerActivity
 import edu.uestc.nightsign.ui.theme.AppTheme
 import edu.uestc.nightsign.ui.theme.UestcHelperTheme
 import edu.uestc.nightsign.ui.viewmodel.MainUiState
@@ -254,7 +255,8 @@ private fun WechatCodeSection(state: MainUiState, viewModel: MainViewModel) {
     if (connected) Text("已连接：${state.wechatCode.endpoint}", style = MaterialTheme.typography.bodySmall)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            .setPrompt("扫描服务器管理页面的绑定二维码").setBeepEnabled(false).setOrientationLocked(false)) },
+            .setCaptureActivity(QrScannerActivity::class.java)
+            .setPrompt("扫描服务器管理页面的绑定二维码").setBeepEnabled(false).setOrientationLocked(true)) },
             enabled = !state.busy && !state.qrBusy) { Text(if (connected) "重新绑定服务器" else "扫码连接服务器") }
         if (connected) TextButton(onClick = viewModel::disconnectServer,
             enabled = !state.busy && !state.qrBusy) { Text("断开连接") }
