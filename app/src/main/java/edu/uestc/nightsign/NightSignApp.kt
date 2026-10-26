@@ -7,7 +7,8 @@ import edu.uestc.nightsign.worker.CheckinWorker
 
 class NightSignApp : Application() {
     val store by lazy { PrivateStore(this) }
-    val repository by lazy { NightSignRepository(store) }
+    val localWechat by lazy { edu.uestc.nightsign.data.wechat.LocalWechatClient(this, store) }
+    val repository by lazy { NightSignRepository(store, localWechat) }
     override fun onCreate() {
         super.onCreate()
         CheckinWorker.schedule(this, store.settings().autoEnabled)

@@ -31,3 +31,6 @@ Thumbs.db
 
 # Local development cache
 work/
+.local-python-test/
+**/__pycache__/
+*.pyc

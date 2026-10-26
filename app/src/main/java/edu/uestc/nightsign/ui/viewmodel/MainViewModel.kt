@@ -36,6 +36,10 @@ data class MainUiState(
     val updatePrompt: UpdatePrompt? = null,
     val wechatCode: WechatCodeSettings = WechatCodeSettings(),
     val serverAuthorization: String = "",
+    val localWechatAuthorized: Boolean = false,
+    val wechatQr: String? = null,
+    val wechatProgress: String = "",
+    val wechatMode: String = "local",
 )
 
 data class UpdatePrompt(
@@ -51,7 +55,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutable = MutableStateFlow(MainUiState(settings = app.store.settings(), events = app.store.events(),
         theme = app.store.secret("theme") ?: "blue",
         signedIn = repository.jar.snapshot().any { it.domain == "jzsz.uestc.edu.cn" && it.name == "SESSION" },
-        wechatCode = repository.wechatCodeSettings()))
+        wechatCode = repository.wechatCodeSettings(), localWechatAuthorized = app.localWechat.authorized,
+        wechatMode = repository.wechatMode()))
     val ui = mutable.asStateFlow()
     private val updateChecker = AppUpdateChecker()
     private val updateStorage = UpdateReminderStorage(application)
@@ -59,9 +64,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var smsAnswer: CompletableDeferred<String?>? = null
     private var countdown: Job? = null
     private var authorizationSync: Job? = null
+    private var localCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun setWechatMode(mode: String) = launchOperation {
+        authorizationSync?.cancelAndJoin()
+        repository.setWechatMode(mode)
+        mutable.update { it.copy(wechatMode = mode, serverAuthorization = "") }
+    }
+
+    fun authorizeLocalWechat() {
+        if (mutable.value.busy) return
+        localCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        launchOperation {
+            try {
+                repository.authorizeLocalWechat(localCancelled,
+                    { image -> mutable.update { it.copy(wechatQr = image) } },
+                    { message -> mutable.update { it.copy(wechatProgress = message) } })
+                mutable.update { it.copy(localWechatAuthorized = app.localWechat.authorized,
+                    message = "微信授权成功") }
+            } finally {
+                mutable.update { it.copy(wechatQr = null, wechatProgress = "",
+                    localWechatAuthorized = app.localWechat.authorized) }
+            }
+        }
+    }
+
+    fun cancelLocalWechat() { localCancelled.set(true); operation?.cancel() }
+
+    fun clearLocalWechat() {
+        if (mutable.value.busy) return
+        app.localWechat.clear()
+        mutable.update { it.copy(localWechatAuthorized = false, message = "已清除手机本地微信授权") }
+    }
+
+    override fun onCleared() {
+        localCancelled.set(true)
+        super.onCleared()
+    }
 
     fun refreshWechatAuthorization() {
-        if (authorizationSync?.isActive == true || mutable.value.busy || mutable.value.wechatCode.accessToken.isBlank()) return
+        if (mutable.value.wechatMode != "server" || authorizationSync?.isActive == true || mutable.value.busy || mutable.value.wechatCode.accessToken.isBlank()) return
         authorizationSync = viewModelScope.launch {
             try {
                 val status = repository.syncWechatAuthorization()
@@ -128,7 +170,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun testWechatAuthorization() = launchOperation {
         repository.testWechatAuthorization()
         mutable.update { it.copy(wechatCode = repository.wechatCodeSettings(), serverAuthorization = "微信已授权",
-            message = "微信取码及学校授权成功，未提交签到") }
+            message = "微信授权验证成功") }
     }
 
     fun showLogin() { mutable.update { it.copy(showLogin = true, message = null) } }
@@ -232,11 +274,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun logout() = launchOperation {
         authorizationSync?.cancelAndJoin()
-        val previous = repository.wechatCodeSettings()
-        if (previous.accessToken.isNotBlank()) withContext(Dispatchers.IO) {
-            runCatching { ServerPairingClient().revoke(previous) }
-                .onFailure { app.store.record("服务器未确认撤销绑定，可在管理页面撤销设备") }
-        }
         repository.logout()
         CheckinWorker.schedule(app, false)
         mutable.update { it.copy(overview = null, signedIn = false, settings = app.store.settings(),

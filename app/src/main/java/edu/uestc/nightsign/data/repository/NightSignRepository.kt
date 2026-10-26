@@ -20,7 +20,8 @@ data class SavedCookie(val origin: String, val header: String)
 data class SavedAccount(val username: String, val password: String)
 
 /** 前台操作与后台检查共享同一 CookieJar 和互斥锁。 */
-class NightSignRepository(val store: PrivateStore) {
+class NightSignRepository(val store: PrivateStore,
+    private val localWechat: edu.uestc.nightsign.data.wechat.LocalWechatClient) {
     val jar = InMemoryCookieJar()
     val client = ApiConstants.buildOkHttp(jar)
     val auth = CasLoginRepository(client, jar)
@@ -29,6 +30,13 @@ class NightSignRepository(val store: PrivateStore) {
         checkinTicketProvider = { acquireWechatTicket() })
     private val mutex = Mutex()
     private val gson = Gson()
+
+    fun wechatMode(): String = if (store.secret("wechat-mode") == "server") "server" else "local"
+
+    suspend fun setWechatMode(mode: String) = withContext(Dispatchers.IO) {
+        require(mode in setOf("local", "server"))
+        mutex.withLock { store.putSecret("wechat-mode", mode) }
+    }
 
     @Synchronized fun wechatCodeSettings(): WechatCodeSettings = runCatching {
         gson.fromJson(store.secret("wechat-code"), WechatCodeSettings::class.java) ?: WechatCodeSettings()
@@ -60,9 +68,26 @@ class NightSignRepository(val store: PrivateStore) {
     }
 
     private fun acquireWechatTicket(): String {
-        require(synchronizeWechatAuthorization().authorized) { "请先在服务器管理页完成微信授权" }
-        val code = codeClient.fetchCode(wechatCodeSettings())
+        val code = edu.uestc.nightsign.data.wechat.fetchCodeForMode(wechatMode(),
+            local = { localWechat.fetchCode(schoolSession()) }, server = {
+            require(synchronizeWechatAuthorization().authorized) { "请先在服务器管理页完成微信授权" }
+            codeClient.fetchCode(wechatCodeSettings())
+        })
         return api.requestCheckinTicket(code)
+    }
+
+    private fun schoolSession(): String = jar.loadForRequest(ApiConstants.PLATFORM_ORIGIN.toHttpUrl())
+        .firstOrNull { it.name == "SESSION" }?.value ?: throw IOException("请先登录学校账号")
+
+    suspend fun authorizeLocalWechat(cancelled: java.util.concurrent.atomic.AtomicBoolean,
+        showQr: (String) -> Unit, progress: (String) -> Unit) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            prepareSession(false)
+            val code = localWechat.fetchCode(schoolSession(), true, cancelled, showQr, progress)
+            currentCoroutineContext().ensureActive()
+            api.requestCheckinTicket(code)
+            store.record("手机本地微信授权成功（未提交签到）")
+        }
     }
 
     suspend fun testWechatAuthorization() = withContext(Dispatchers.IO) {

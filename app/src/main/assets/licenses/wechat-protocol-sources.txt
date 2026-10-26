@@ -1,0 +1,22 @@
+Phone-local authorization sources
+
+The active implementation is Kotlin in data/wechat/nativeprotocol. The Python
+modules are retained as an offline reference and are not packaged or executed.
+The Kotlin protocol port follows the same source provenance documented here.
+
+native_auth.py is adapted from LCX-luo/GoodnightUESTC:
+https://github.com/LCX-luo/GoodnightUESTC
+See GoodnightUESTC.txt for its MIT notice.
+Adaptation: reuse the app's existing CAS session and return a fresh code;
+school ticket exchange stays in the Kotlin repository.
+
+wechat_protocol/_wechat_{crypto,wire,dns,mmtls}.py are from:
+https://github.com/MioYiSama/moon-uestc
+Commit: f8a93c3bc4d62cea879b76560c49c9646387b386
+Adaptation: replace a Pydantic type-only import with typing.Any.
+No LICENSE file was present at the pinned repository root. Public release
+of these source modules requires confirming redistribution permission.
+Do not assume the surrounding app's MIT license covers these modules.
+
+The crypto module identifies YYB-Go-Enhanced as its protocol reference:
+commit 8a9497397abc7bf736be462f2e293f2bc6d4d0c0.

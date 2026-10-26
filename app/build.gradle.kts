@@ -24,8 +24,8 @@ android {
         applicationId = "com.milloong.uestc.nightsign"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.1.6"
         val localProperties = Properties().apply {
             val file = rootProject.file("local.properties")
             if (file.exists()) file.inputStream().use { load(it) }
@@ -62,16 +62,6 @@ kotlin {
     compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
 
-afterEvaluate {
-    tasks.named("assembleDebug").configure {
-        doLast {
-            val apkDir = layout.buildDirectory.dir("outputs/apk/debug").get().asFile
-            val source = apkDir.resolve("app-debug.apk")
-            if (!source.isFile) return@doLast
-            source.copyTo(apkDir.resolve("UESTC-NightSign.apk"), overwrite = true)
-        }
-    }
-}
 dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

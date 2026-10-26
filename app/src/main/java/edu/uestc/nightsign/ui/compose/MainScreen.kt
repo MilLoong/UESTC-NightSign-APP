@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
@@ -28,6 +29,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import edu.uestc.nightsign.BuildConfig
 import edu.uestc.nightsign.MapPickerActivity
@@ -248,6 +252,77 @@ private fun SettingsTab(state: MainUiState, viewModel: MainViewModel) {
 @Composable
 private fun WechatCodeSection(state: MainUiState, viewModel: MainViewModel) {
     Text("微信授权", style = MaterialTheme.typography.titleLarge)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(selected = state.wechatMode == "local", onClick = { viewModel.setWechatMode("local") },
+            label = { Text("手机本地") }, enabled = !state.busy)
+        FilterChip(selected = state.wechatMode == "server", onClick = { viewModel.setWechatMode("server") },
+            label = { Text("服务端") }, enabled = !state.busy)
+    }
+    if (state.wechatMode == "server") {
+        ServerWechatSection(state, viewModel)
+        return
+    }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var saving by remember { mutableStateOf(false) }
+    var exportImage by remember { mutableStateOf<String?>(null) }
+    val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        val encoded = exportImage
+        exportImage = null
+        if (uri != null && encoded != null) scope.launch {
+            saving = true
+            try {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use {
+                        it.write(edu.uestc.nightsign.data.wechat.QrImageSaver.png(encoded))
+                    } ?: error("无法保存图片")
+                }
+                viewModel.showMessage("二维码已保存")
+            } catch (_: Exception) { viewModel.showMessage("保存失败，请重试") }
+            finally { saving = false }
+        }
+    }
+    Text(if (state.localWechatAuthorized) "已授权" else "尚未授权")
+    Text("请在另一个屏幕展示二维码，再用微信扫码。", style = MaterialTheme.typography.bodySmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = viewModel::authorizeLocalWechat, enabled = !state.busy) {
+            Text(if (state.localWechatAuthorized) "验证授权" else "微信授权")
+        }
+        if (state.localWechatAuthorized) TextButton(onClick = viewModel::clearLocalWechat,
+            enabled = !state.busy) { Text("清除授权") }
+    }
+    if (state.wechatProgress.isNotBlank()) Text(state.wechatProgress)
+    val bitmap = remember(state.wechatQr) {
+        state.wechatQr?.let { encoded -> runCatching {
+            val bytes = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT)
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }.getOrNull() }
+    }
+    if (bitmap != null) {
+        androidx.compose.foundation.Image(bitmap = bitmap.asImageBitmap(), contentDescription = "微信授权二维码",
+            modifier = Modifier.fillMaxWidth().height(260.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(enabled = !saving, onClick = {
+                val encoded = state.wechatQr ?: return@OutlinedButton
+                if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
+                    exportImage = encoded
+                    export.launch("wechat-qr.png")
+                } else scope.launch {
+                    saving = true
+                    try {
+                        withContext(Dispatchers.IO) { edu.uestc.nightsign.data.wechat.QrImageSaver.gallery(context, encoded) }
+                        viewModel.showMessage("二维码已保存到相册")
+                    } catch (_: Exception) { viewModel.showMessage("保存失败，请重试") }
+                    finally { saving = false }
+                }
+            }) { Text(if (saving) "保存中" else "保存二维码") }
+            TextButton(onClick = viewModel::cancelLocalWechat) { Text("取消") }
+        }
+    }
+}
+
+@Composable
+private fun ServerWechatSection(state: MainUiState, viewModel: MainViewModel) {
     var offer by remember { mutableStateOf<ServerPairingOffer?>(null) }
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let { raw ->
@@ -257,32 +332,29 @@ private fun WechatCodeSection(state: MainUiState, viewModel: MainViewModel) {
     }
     val connected = state.wechatCode.accessToken.isNotBlank()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(state.wechatCode.accessToken, lifecycle) {
+    LaunchedEffect(connected, lifecycle, state.wechatCode.endpoint) {
         if (connected) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) { viewModel.refreshWechatAuthorization(); delay(5000) }
         }
     }
-    if (connected) Text("已连接：${state.wechatCode.endpoint}", style = MaterialTheme.typography.bodySmall)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Text(if (connected) "已连接：${state.wechatCode.endpoint}" else "请扫描服务器管理页的绑定二维码",
+        style = MaterialTheme.typography.bodySmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            .setCaptureActivity(QrScannerActivity::class.java)
-            .setPrompt("扫描服务器管理页面的绑定二维码").setBeepEnabled(false).setOrientationLocked(true)) },
-            enabled = !state.busy) { Text(if (connected) "重新绑定服务器" else "扫码连接服务器") }
-        if (connected) TextButton(onClick = viewModel::disconnectServer,
-            enabled = !state.busy) { Text("断开连接") }
+            .setCaptureActivity(QrScannerActivity::class.java).setPrompt("扫描服务器绑定二维码")
+            .setBeepEnabled(false).setOrientationLocked(true)) }, enabled = !state.busy) {
+            Text(if (connected) "重新连接" else "连接服务器")
+        }
+        if (connected) TextButton(onClick = viewModel::disconnectServer, enabled = !state.busy) { Text("断开") }
     }
     if (connected) {
         Text(state.serverAuthorization.ifBlank { if (state.wechatCode.enabled) "微信已授权" else "请在服务器管理页完成微信授权" })
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = viewModel::refreshWechatAuthorization, enabled = !state.busy) { Text("刷新授权状态") }
-            OutlinedButton(onClick = viewModel::testWechatAuthorization,
-                enabled = !state.busy && state.wechatCode.enabled) { Text("仅测试授权") }
-        }
-        Text("测试授权不会提交签到。", style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = viewModel::testWechatAuthorization,
+            enabled = !state.busy && state.wechatCode.enabled) { Text("验证授权") }
     }
     offer?.let { pending -> AlertDialog(onDismissRequest = { offer = null },
         title = { Text("连接服务器") }, text = { Text("确认信任此服务器？\n${pending.endpoint}") },
-        confirmButton = { TextButton(onClick = { offer = null; viewModel.pairServer(pending) }) { Text("信任并连接") } },
+        confirmButton = { TextButton(onClick = { offer = null; viewModel.pairServer(pending) }) { Text("连接") } },
         dismissButton = { TextButton(onClick = { offer = null }) { Text("取消") } }) }
 }
 
